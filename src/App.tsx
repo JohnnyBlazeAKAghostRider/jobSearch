@@ -1,5 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Search, Briefcase, BookmarkPlus, ExternalLink } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Builder, By, until } from 'selenium-webdriver';
+import puppeteer from 'puppeteer-core';
+import dotenv from 'dotenv';
+dotenv.config();
 
 type Job = {
   id: string;
@@ -11,43 +16,99 @@ type Job = {
   postedDate: string;
 };
 
-// Mock data - replace with real API calls in production
-const mockJobs: Job[] = [
-  {
-    id: '1',
-    title: 'Senior Frontend Developer',
-    company: 'TechCorp',
-    location: 'Remote',
-    salary: '$120k - $150k',
-    description: 'Looking for an experienced frontend developer with React expertise...',
-    postedDate: '2024-03-10'
-  },
-  {
-    id: '2',
-    title: 'Full Stack Engineer',
-    company: 'StartupX',
-    location: 'New York, NY',
-    salary: '$130k - $160k',
-    description: 'Join our fast-growing team to build innovative solutions...',
-    postedDate: '2024-03-12'
-  },
-  {
-    id: '3',
-    title: 'DevOps Engineer',
-    company: 'CloudTech',
-    location: 'San Francisco, CA',
-    salary: '$140k - $170k',
-    description: 'Help us scale our cloud infrastructure and implement CI/CD...',
-    postedDate: '2024-03-13'
-  }
-];
-
 function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'search' | 'saved'>('search');
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [companies, setCompanies] = useState<string[]>([]);
 
-  const filteredJobs = mockJobs.filter(job => 
+  // خواندن فایل اکسل و استخراج شرکت‌ها
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const data = e.target?.result;
+        const workbook = XLSX.read(data, { type: 'binary' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const json = XLSX.utils.sheet_to_json(worksheet);
+        const companyList = json.map((row: any) => row.Company);
+        setCompanies(companyList);
+      };
+      reader.readAsBinaryString(file);
+    }
+  };
+
+  // وب‌اسکرپینگ لینکدین با puppeteer
+  const fetchJobsFromLinkedIn = async (company: string) => {
+    const browser = await puppeteer.launch({ 
+      executablePath: '',
+      headless: true,
+     });
+    const page = await browser.newPage();
+
+    try {
+      // ورود به لینکدین
+      await page.goto('https://www.linkedin.com/login');
+      await page.type('#username', process.env.LINKEDIN_USERNAME!);
+      await page.type('#password', process.env.LINKEDIN_PASSWORD!);
+      await page.click('button[type="submit"]');
+      await page.waitForNavigation();
+
+      // جستجوی شرکت
+      await page.goto(`https://www.linkedin.com/jobs/search/?keywords=${company}`);
+      await page.waitForSelector('.jobs-search__results-list');
+
+      // استخراج داده‌ها
+      const jobs = await page.evaluate(() => {
+        const jobElements = document.querySelectorAll('.jobs-search__results-list li');
+        const jobs: Job[] = [];
+        jobElements.forEach((element) => {
+          const title = element.querySelector('.job-result-card__title')?.textContent?.trim();
+          const company = element.querySelector('.job-result-card__company')?.textContent?.trim();
+          const location = element.querySelector('.job-result-card__location')?.textContent?.trim();
+          const salary = element.querySelector('.job-result-card__salary-info')?.textContent?.trim() || 'Not specified';
+          const description = element.querySelector('.job-result-card__snippet')?.textContent?.trim() || 'No description available';
+          const postedDate = element.querySelector('.job-result-card__listdate')?.textContent?.trim() || 'Unknown';
+
+          if (title && company && location) {
+            jobs.push({
+              id: Math.random().toString(36).substring(7), // یک ID تصادفی
+              title,
+              company,
+              location,
+              salary,
+              description,
+              postedDate,
+            });
+          }
+        });
+        return jobs;
+      });
+
+      return jobs;
+    } finally {
+      await browser.close();
+    }
+  };
+
+  useEffect(() => {
+    const loadJobs = async () => {
+      const allJobs: Job[] = [];
+      for (const company of companies) {
+        const jobs = await fetchJobsFromLinkedIn(company);
+        allJobs.push(...jobs);
+      }
+      setJobs(allJobs);
+    };
+    if (companies.length > 0) {
+      loadJobs();
+    }
+  }, [companies]);
+
+  const filteredJobs = jobs.filter(job => 
     job.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
     job.company.toLowerCase().includes(searchTerm.toLowerCase()) ||
     job.location.toLowerCase().includes(searchTerm.toLowerCase())
@@ -55,7 +116,7 @@ function App() {
 
   const displayJobs = activeTab === 'search' 
     ? filteredJobs 
-    : mockJobs.filter(job => savedJobs.includes(job.id));
+    : jobs.filter(job => savedJobs.includes(job.id));
 
   const toggleSaveJob = (jobId: string) => {
     setSavedJobs(prev => 
@@ -103,6 +164,21 @@ function App() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Upload Excel File */}
+        <div className="mb-8">
+          <input
+            type="file"
+            accept=".xlsx, .xls"
+            onChange={handleFileUpload}
+            className="block w-full text-sm text-gray-500
+                      file:mr-4 file:py-2 file:px-4
+                      file:rounded-md file:border-0
+                      file:text-sm file:font-semibold
+                      file:bg-indigo-50 file:text-indigo-700
+                      hover:file:bg-indigo-100"
+          />
+        </div>
+
         {/* Search Bar */}
         <div className="mb-8">
           <div className="relative">
